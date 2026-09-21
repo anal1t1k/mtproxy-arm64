@@ -8,7 +8,11 @@ jobs:
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Test ARM64 runner
+      - name: Test ARM64
         run: |
+          echo "Architecture:"
           uname -m
+          echo "Kernel:"
           uname -a
+          echo "Compiler:"
+          gcc --version
