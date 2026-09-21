@@ -4,15 +4,168 @@ on:
   workflow_dispatch:
 
 jobs:
-  test:
+  build:
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Test ARM64
+      - name: Checkout MTProxy
+        uses: actions/checkout@v4
+        with:
+          repository: TelegramMessenger/MTProxy
+          ref: master
+          path: MTProxy
+
+      - name: Install dependencies
         run: |
-          echo "Architecture:"
-          uname -m
-          echo "Kernel:"
-          uname -a
-          echo "Compiler:"
-          gcc --version
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            make \
+            gcc \
+            libc6-dev \
+            libssl-dev \
+            zlib1g-dev \
+            file
+
+      - name: Patch ARM64 compatibility
+        working-directory: MTProxy
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # ---------- cpuid.c ----------
+          p = Path("common/cpuid.c")
+          s = p.read_text()
+
+          old = """  unsigned int a;
+            assert(
+              __get_cpuid(1,
+                  &a,
+                  (unsigned int*) &cached.ebx,
+                  (unsigned int*) &cached.ecx,
+                  (unsigned int*) &cached.edx
+              ) != 0
+            );"""
+
+          new = """#if defined(__i386__) || defined(__x86_64__)
+            unsigned int a;
+            assert(
+              __get_cpuid(1,
+                  &a,
+                  (unsigned int*) &cached.ebx,
+                  (unsigned int*) &cached.ecx,
+                  (unsigned int*) &cached.edx
+              ) != 0
+            );
+          #else
+            cached.ebx = 0;
+            cached.ecx = 0;
+            cached.edx = 0;
+          #endif"""
+
+          if old not in s:
+              raise SystemExit("cpuid.c pattern not found")
+
+          p.write_text(s.replace(old, new))
+
+          # ---------- crc32c.c ----------
+          p = Path("common/crc32c.c")
+          s = p.read_text()
+
+          start = s.index("#ifdef __LP64__")
+          end = s.index(
+              "unsigned crc32c_partial_four_tables",
+              start
+          )
+
+          x86_block = s[start:end]
+
+          replacement = """#if defined(__i386__) || defined(__x86_64__)
+          """ + x86_block.replace(
+              "#ifdef __LP64__",
+              "#if defined(__x86_64__)",
+              1
+          ) + """#else
+          static unsigned crc32c_partial_sse42 (
+              const void *data, long len, unsigned crc
+          ) {
+            return crc32c_partial_four_tables(data, len, crc);
+          }
+          #endif
+
+          """
+
+          s = s[:start] + replacement + s[end:]
+
+          # ARM64 must always use the generic CRC combine path.
+          old_init = """void crc32c_init (void) {
+            kdb_cpuid_t *p = kdb_cpuid ();
+            compute_crc32c_combine = &crc32c_combine_generic;
+            if (p->ecx & (1 << 20)) {
+              crc32c_partial = crc32c_partial_sse42;
+          #ifdef __LP64__
+              if (p->ecx & 2) {
+                crc32c_partial = crc32c_partial_sse42_clmul;
+                compute_crc32c_combine = &crc32c_combine_clmul;
+              }
+          #endif
+            } else {
+              crc32c_partial = &crc32c_partial_four_tables;
+            }
+          }"""
+
+          new_init = """void crc32c_init (void) {
+            compute_crc32c_combine = &crc32c_combine_generic;
+          #if defined(__i386__) || defined(__x86_64__)
+            kdb_cpuid_t *p = kdb_cpuid ();
+            if (p->ecx & (1 << 20)) {
+              crc32c_partial = crc32c_partial_sse42;
+          #if defined(__x86_64__)
+              if (p->ecx & 2) {
+                crc32c_partial = crc32c_partial_sse42_clmul;
+                compute_crc32c_combine = &crc32c_combine_clmul;
+              }
+          #endif
+            } else {
+              crc32c_partial = &crc32c_partial_four_tables;
+            }
+          #else
+            crc32c_partial = &crc32c_partial_four_tables;
+          #endif
+          }"""
+
+          if old_init not in s:
+              raise SystemExit("crc32c.c init pattern not found")
+
+          s = s.replace(old_init, new_init)
+
+          p.write_text(s)
+
+          print("ARM64 patches applied")
+          PY
+
+      - name: Build MTProxy
+        working-directory: MTProxy
+        run: |
+          sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
+          sed -i 's/-mfpmath=sse//g' Makefile
+          sed -i 's/-mssse3//g' Makefile
+
+          make clean || true
+
+          make
+
+          file objs/bin/mtproto-proxy
+          readelf -h objs/bin/mtproto-proxy | grep -E 'Class|Machine'
+
+      - name: Package
+        run: |
+          mkdir -p artifact
+          cp MTProxy/objs/bin/mtproto-proxy artifact/
+
+      - name: Upload ARM64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtproxy-arm64
+          path: artifact/
