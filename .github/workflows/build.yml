@@ -27,6 +27,106 @@ jobs:
             zlib1g-dev \
             file
 
+      - name: Patch MTProxy for ARM64
+        working-directory: MTProxy
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          # -------------------------------------------------
+          # cpuid.c
+          # ARM64 has no x86 CPUID instruction.
+          # Return an empty feature set on non-x86.
+          # -------------------------------------------------
+          p = Path("common/cpuid.c")
+          s = p.read_text()
+
+          old = '''  unsigned int a;
+            assert( __get_cpuid(1, &a, (unsigned int*) &cached.ebx, (unsigned int*) &cached.ecx, (unsigned int*) &cached.edx ) != 0 );
+            cached.magic = CPUID_MAGIC;'''
+
+          new = '''#if defined(__i386__) || defined(__x86_64__)
+            unsigned int a;
+            assert( __get_cpuid(1, &a, (unsigned int*) &cached.ebx, (unsigned int*) &cached.ecx, (unsigned int*) &cached.edx ) != 0 );
+          #else
+            cached.ebx = 0;
+            cached.ecx = 0;
+            cached.edx = 0;
+          #endif
+            cached.magic = CPUID_MAGIC;'''
+
+          if old not in s:
+              raise SystemExit("cpuid.c: expected code not found")
+
+          p.write_text(s.replace(old, new))
+
+          # -------------------------------------------------
+          # crc32c.c
+          # The optimized crc32/pclmul code is x86-only.
+          # On ARM64 use the generic four-table implementation.
+          # -------------------------------------------------
+          p = Path("common/crc32c.c")
+          s = p.read_text()
+
+          s = s.replace(
+              "#ifdef __LP64__",
+              "#if defined(__x86_64__)",
+              1
+          )
+
+          s = s.replace(
+              "#else\nstatic unsigned crc32c_partial_sse42",
+              "#elif defined(__i386__)\nstatic unsigned crc32c_partial_sse42",
+              1
+          )
+
+          marker = "void crc32c_init (void) {\n"
+
+          if marker not in s:
+              raise SystemExit("crc32c.c: crc32c_init marker not found")
+
+          old_init = """  kdb_cpuid_t *p = kdb_cpuid ();
+    compute_crc32c_combine = &crc32c_combine_generic;
+    if (p->ecx & (1 << 20)) {
+      crc32c_partial = crc32c_partial_sse42;
+#ifdef __LP64__
+      if (p->ecx & 2) {
+        crc32c_partial = crc32c_partial_sse42_clmul;
+        compute_crc32c_combine = &crc32c_combine_clmul;
+      }
+#endif
+    } else {
+      crc32c_partial = &crc32c_partial_four_tables;
+    }"""
+
+          new_init = """  compute_crc32c_combine = &crc32c_combine_generic;
+#if defined(__i386__) || defined(__x86_64__)
+  kdb_cpuid_t *p = kdb_cpuid ();
+  if (p->ecx & (1 << 20)) {
+    crc32c_partial = crc32c_partial_sse42;
+#if defined(__x86_64__)
+    if (p->ecx & 2) {
+      crc32c_partial = crc32c_partial_sse42_clmul;
+      compute_crc32c_combine = &crc32c_combine_clmul;
+    }
+#endif
+  } else {
+    crc32c_partial = &crc32c_partial_four_tables;
+  }
+#else
+  crc32c_partial = &crc32c_partial_four_tables;
+#endif"""
+
+          if old_init not in s:
+              raise SystemExit("crc32c.c: expected init code not found")
+
+          s = s.replace(old_init, new_init)
+
+          p.write_text(s)
+
+          print("ARM64 patches applied successfully")
+          PY
+
       - name: Build MTProxy
         working-directory: MTProxy
         run: |
