@@ -1,3 +1,4 @@
+```yaml
 name: Build MTProxy ARM64
 
 on:
@@ -17,8 +18,15 @@ jobs:
 
       - name: Install ARM64 toolchain
         run: |
+          sudo dpkg --add-architecture arm64
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu libc6-dev-arm64-cross libssl-dev zlib1g-dev make
+          sudo apt-get install -y \
+            gcc-aarch64-linux-gnu \
+            binutils-aarch64-linux-gnu \
+            libc6-dev-arm64-cross \
+            libssl-dev:arm64 \
+            zlib1g-dev:arm64 \
+            make
 
       - name: Patch Makefile for ARM64
         working-directory: MTProxy
@@ -26,14 +34,23 @@ jobs:
           sed -i 's/-mpclmul//g' Makefile
           sed -i 's/-march=core2//g' Makefile
           sed -i 's/-mfpmath=sse//g' Makefile
-          sed -i 's/-mfpmath=sse//g' Makefile
           sed -i 's/-mssse3//g' Makefile
 
       - name: Build
         working-directory: MTProxy
+        env:
+          CC: aarch64-linux-gnu-gcc
+          AR: aarch64-linux-gnu-ar
+          RANLIB: aarch64-linux-gnu-ranlib
         run: |
           make clean || true
-          make CC=aarch64-linux-gnu-gcc AR=aarch64-linux-gnu-ar RANLIB=aarch64-linux-gnu-ranlib CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64"
+          make \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
+            CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64" \
+            CPPFLAGS="--sysroot=/usr/aarch64-linux-gnu -I/usr/include/aarch64-linux-gnu" \
+            LDFLAGS="--sysroot=/usr/aarch64-linux-gnu -L/usr/lib/aarch64-linux-gnu"
 
       - name: Verify binary
         working-directory: MTProxy
@@ -52,3 +69,4 @@ jobs:
         with:
           name: mtproxy-arm64
           path: artifact/
+```
