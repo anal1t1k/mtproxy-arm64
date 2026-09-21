@@ -5,7 +5,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout MTProxy
@@ -15,40 +15,32 @@ jobs:
           ref: master
           path: MTProxy
 
-      - name: Build ARM64
+      - name: Install dependencies
         run: |
-          docker run --rm \
-            --platform linux/arm64 \
-            -v "$PWD/MTProxy:/src" \
-            ubuntu:24.04 \
-            bash -c '
-              set -e
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            make \
+            gcc \
+            libc6-dev \
+            libssl-dev \
+            zlib1g-dev \
+            file
 
-              apt-get update
+      - name: Build MTProxy
+        working-directory: MTProxy
+        run: |
+          sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
+          sed -i 's/-mfpmath=sse//g' Makefile
+          sed -i 's/-mssse3//g' Makefile
 
-              apt-get install -y \
-                git \
-                make \
-                gcc \
-                libc6-dev \
-                libssl-dev \
-                zlib1g-dev \
-                file
+          make clean || true
 
-              cd /src
+          make \
+            CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64"
 
-              sed -i "s/-mpclmul//g" Makefile
-              sed -i "s/-march=core2//g" Makefile
-              sed -i "s/-mfpmath=sse//g" Makefile
-              sed -i "s/-mssse3//g" Makefile
-
-              make clean || true
-
-              make \
-                CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64"
-
-              file objs/bin/mtproto-proxy
-            '
+          file objs/bin/mtproto-proxy
 
       - name: Package
         run: |
