@@ -5,8 +5,8 @@ on:
 
 jobs:
   build:
-    name: Build ARM64
-    runs-on: ubuntu-24.04
+    name: Build MTProxy on ARM64
+    runs-on: ubuntu-24.04-arm
 
     steps:
       - name: Checkout MTProxy
@@ -16,93 +16,113 @@ jobs:
           ref: master
           fetch-depth: 0
 
-      - name: Install ARM64 cross compiler
+      - name: Install dependencies
         run: |
-          sudo dpkg --add-architecture arm64
-
-          sudo sed -i \
-            -e 's|^deb http://archive.ubuntu.com/ubuntu|deb [arch=amd64] http://archive.ubuntu.com/ubuntu|g' \
-            -e 's|^deb http://security.ubuntu.com/ubuntu|deb [arch=amd64] http://security.ubuntu.com/ubuntu|g' \
-            /etc/apt/sources.list
-
           sudo apt-get update
-
           sudo apt-get install -y \
-            gcc-aarch64-linux-gnu \
-            binutils-aarch64-linux-gnu \
-            libc6-dev-arm64-cross \
-            libssl-dev:arm64 \
-            zlib1g-dev:arm64 \
-            make \
             git \
-            curl \
-            xxd
+            make \
+            gcc \
+            libc6-dev \
+            libssl-dev \
+            zlib1g-dev \
+            file \
+            binutils
 
-      - name: Show compiler
+      - name: Check ARM64 environment
         run: |
-          aarch64-linux-gnu-gcc --version
-          aarch64-linux-gnu-gcc -dumpmachine
+          echo "Architecture:"
+          uname -m
 
-      - name: Patch ARM64 compatibility
+          echo "Compiler:"
+          gcc --version
+
+          echo "Compiler target:"
+          gcc -dumpmachine
+
+      - name: Patch MTProxy for ARM64
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
+          # ==================================================
+          # crc32c.c
+          # Disable x86-specific PCLMUL/SSE implementation
+          # on ARM64 and use the generic implementation.
+          # ==================================================
+
           p = Path("common/crc32c.c")
           s = p.read_text()
 
+          # The MTProxy source uses __LP64__ to select the
+          # PCLMUL implementation. __LP64__ is also defined
+          # on ARM64, so replace this condition with x86_64.
           s = s.replace(
-              '#if defined(__x86_64__) || defined(__i386__)',
-              '#if 0'
+              "#ifdef __LP64__",
+              "#if defined(__x86_64__)",
+              1
           )
 
+          # Protect the remaining x86 CRC/SSE code.
           s = s.replace(
-              '#if defined(__SSE4_2__)',
-              '#if 0'
+              "#ifdef __SSE4_2__",
+              "#if defined(__x86_64__) && defined(__SSE4_2__)",
           )
 
           p.write_text(s)
+
+          # ==================================================
+          # mp-queue.c
+          # Replace x86 mfence with ARM64 barrier.
+          # ==================================================
 
           p = Path("common/mp-queue.c")
           s = p.read_text()
 
           s = s.replace(
-              '__sync_synchronize();',
-              '__atomic_thread_fence(__ATOMIC_SEQ_CST);'
+              'asm volatile ("mfence" ::: "memory");',
+              'asm volatile ("dmb ish" ::: "memory");'
+          )
+
+          s = s.replace(
+              'asm volatile("mfence" ::: "memory");',
+              'asm volatile ("dmb ish" ::: "memory");'
           )
 
           p.write_text(s)
+
+          print("ARM64 patches applied")
           PY
 
-      - name: Build
-        env:
-          CC: aarch64-linux-gnu-gcc
-          AR: aarch64-linux-gnu-ar
-          RANLIB: aarch64-linux-gnu-ranlib
-          STRIP: aarch64-linux-gnu-strip
+      - name: Remove x86 compiler flags
+        run: |
+          sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
+          sed -i 's/-mfpmath=sse//g' Makefile
+          sed -i 's/-mssse3//g'
+
+      - name: Build MTProxy
         run: |
           make clean || true
 
           make \
-            CC="$CC" \
-            AR="$AR" \
-            RANLIB="$RANLIB" \
-            CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64" \
-            LDFLAGS="-static"
+            CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64"
 
       - name: Verify binary
         run: |
+          echo "Binary:"
           file objs/bin/mtproto-proxy
-          aarch64-linux-gnu-readelf -h objs/bin/mtproto-proxy | grep -E 'Class|Machine'
-          aarch64-linux-gnu-readelf -d objs/bin/mtproto-proxy || true
 
-      - name: Prepare artifact
+          echo "ELF architecture:"
+          readelf -h objs/bin/mtproto-proxy | grep -E 'Class|Machine'
+
+      - name: Package
         run: |
           mkdir -p artifact
-          cp objs/bin/mtproto-proxy artifact/
+          cp objs/bin/mtproto-proxy artifact/mtproto-proxy
           chmod +x artifact/mtproto-proxy
 
-      - name: Upload MTProxy ARM64
+      - name: Upload ARM64 binary
         uses: actions/upload-artifact@v4
         with:
           name: mtproto-proxy-arm64
