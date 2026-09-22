@@ -36,37 +36,109 @@ jobs:
           p = Path("common/crc32c.c")
           s = p.read_text()
 
-          # __LP64__ is also defined on ARM64, but this block
-          # contains x86-specific assembly.
+          # ---------------------------------------------------------
+          # 1. The __LP64__ block is actually x86-specific.
+          # ARM64 also defines __LP64__, so restrict it to x86.
+          # ---------------------------------------------------------
+
           old = "#ifdef __LP64__"
           new = "#if defined(__x86_64__) || defined(__i386__)"
 
           if old not in s:
-              raise SystemExit("ERROR: architecture guard not found")
+              raise SystemExit("ERROR: first __LP64__ guard not found")
 
           s = s.replace(old, new, 1)
 
-          # On ARM64 the x86 CLMUL implementation does not exist.
-          old_selection = "      crc32c_partial = crc32c_partial_sse42_clmul;"
+          # ---------------------------------------------------------
+          # 2. The following #else is the 32-bit x86 implementation,
+          # not a generic ARM implementation.
+          # Make it i386-only.
+          # ---------------------------------------------------------
 
-          if old_selection not in s:
-              raise SystemExit("ERROR: CLMUL selection not found")
+          old = "#else\nstatic unsigned crc32c_partial_sse42"
+          new = "#elif defined(__i386__)\nstatic unsigned crc32c_partial_sse42"
 
-          new_selection = "\n".join([
-              "#if defined(__x86_64__) || defined(__i386__)",
-              "      crc32c_partial = crc32c_partial_sse42_clmul;",
-              "#else",
-              "      crc32c_partial = crc32c_partial_four_tables;",
-              "#endif"
-          ])
+          if old not in s:
+              raise SystemExit("ERROR: 32-bit x86 CRC32C block not found")
 
-          s = s.replace(old_selection, new_selection, 1)
+          s = s.replace(old, new, 1)
+
+          # ---------------------------------------------------------
+          # 3. The CLMUL combine implementation contains x86 assembly.
+          # Hide it completely on ARM64.
+          # ---------------------------------------------------------
+
+          old = """static unsigned crc32c_combine_clmul (unsigned crc1, unsigned crc2, int64_t len2) {"""
+
+          if old not in s:
+              raise SystemExit("ERROR: crc32c_combine_clmul not found")
+
+          s = s.replace(
+              old,
+              "#if defined(__x86_64__) || defined(__i386__)\n" + old,
+              1
+          )
+
+          marker = """static void crc32c_init (void) __attribute__ ((constructor));"""
+
+          if marker not in s:
+              raise SystemExit("ERROR: crc32c_init marker not found")
+
+          s = s.replace(
+              marker,
+              "#endif\n\n" + marker,
+              1
+          )
+
+          # ---------------------------------------------------------
+          # 4. Replace crc32c_init() with architecture-specific logic.
+          # ARM64 always uses the generic four-table implementation.
+          # ---------------------------------------------------------
+
+          start = s.find("void crc32c_init (void) {")
+          end = s.find("\n}\ncrc32_partial_func_t crc32c_partial;", start)
+
+          if start == -1 or end == -1:
+              raise SystemExit("ERROR: crc32c_init body not found")
+
+          old_init = s[start:end + 2]
+
+          new_init = """void crc32c_init (void) {
+            compute_crc32c_combine = &crc32c_combine_generic;
+
+          #if defined(__x86_64__) || defined(__i386__)
+            kdb_cpuid_t *p = kdb_cpuid ();
+
+            if (p->ecx & (1 << 20)) {
+              crc32c_partial = crc32c_partial_sse42;
+
+          #ifdef __LP64__
+              if (p->ecx & 2) {
+                crc32c_partial = crc32c_partial_sse42_clmul;
+                compute_crc32c_combine = &crc32c_combine_clmul;
+              }
+          #endif
+
+            } else {
+              crc32c_partial = &crc32c_partial_four_tables;
+            }
+
+          #else
+            crc32c_partial = &crc32c_partial_four_tables;
+          #endif
+          }"""
+
+          s = s.replace(old_init, new_init, 1)
 
           p.write_text(s)
+
           PY
 
+          echo "=== CRC32C architecture guards ==="
+          grep -nE '__x86_64__|__i386__|crc32c_combine_clmul|crc32c_partial_four_tables' common/crc32c.c
+
           echo "=== CRC32C init ==="
-          sed -n '635,665p' common/crc32c.c
+          sed -n '610,675p' common/crc32c.c
 
       - name: Build
         run: |
