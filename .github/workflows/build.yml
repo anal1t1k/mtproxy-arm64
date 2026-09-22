@@ -1,129 +1,107 @@
 name: Build MTProxy ARM64
 
 on:
-  workflow_dispatch:
+workflow_dispatch:
 
 jobs:
-  build:
-    name: Build MTProxy on ARM64
-    runs-on: ubuntu-24.04-arm
+build:
+name: Build MTProxy on native ARM64
+runs-on: ubuntu-24.04-arm
 
-    steps:
-      - name: Checkout MTProxy
-        uses: actions/checkout@v4
-        with:
-          repository: TelegramMessenger/MTProxy
-          ref: master
-          fetch-depth: 0
+```
+steps:
+  - name: Checkout MTProxy
+    uses: actions/checkout@v4
+    with:
+      repository: TelegramMessenger/MTProxy
+      ref: master
+      fetch-depth: 0
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            make \
-            gcc \
-            libc6-dev \
-            libssl-dev \
-            zlib1g-dev \
-            file \
-            binutils
+  - name: Install dependencies
+    run: |
+      sudo apt-get update
+      sudo apt-get install -y \
+        git \
+        make \
+        gcc \
+        libc6-dev \
+        libssl-dev \
+        zlib1g-dev \
+        file \
+        binutils
 
-      - name: Check ARM64 environment
-        run: |
-          echo "Architecture:"
-          uname -m
+  - name: Check ARM64 environment
+    run: |
+      echo "Architecture:"
+      uname -m
 
-          echo "Compiler:"
-          gcc --version
+      echo
+      echo "Compiler:"
+      gcc --version
 
-          echo "Compiler target:"
-          gcc -dumpmachine
+      echo
+      echo "Compiler target:"
+      gcc -dumpmachine
 
-      - name: Patch MTProxy for ARM64
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
+  - name: Remove x86 compiler flags
+    run: |
+      sed -i 's/-mpclmul//g' Makefile
+      sed -i 's/-march=core2//g' Makefile
+      sed -i 's/-mfpmath=sse//g' Makefile
+      sed -i 's/-mssse3//g' Makefile
 
-          # ==================================================
-          # crc32c.c
-          # Disable x86-specific PCLMUL/SSE implementation
-          # on ARM64 and use the generic implementation.
-          # ==================================================
+      echo "Makefile flags after patch:"
+      grep -nE 'mpclmul|march=core2|mfpmath=sse|mssse3' Makefile || true
 
-          p = Path("common/crc32c.c")
-          s = p.read_text()
+  - name: Patch CRC32C for ARM64
+    run: |
+      sed -i 's/#ifdef __LP64__/#if defined(__x86_64__)/' common/crc32c.c
 
-          # The MTProxy source uses __LP64__ to select the
-          # PCLMUL implementation. __LP64__ is also defined
-          # on ARM64, so replace this condition with x86_64.
-          s = s.replace(
-              "#ifdef __LP64__",
-              "#if defined(__x86_64__)",
-              1
-          )
+      sed -i 's/#ifdef __SSE4_2__/#if defined(__x86_64__) \&\& defined(__SSE4_2__)/g' common/crc32c.c
 
-          # Protect the remaining x86 CRC/SSE code.
-          s = s.replace(
-              "#ifdef __SSE4_2__",
-              "#if defined(__x86_64__) && defined(__SSE4_2__)",
-          )
+      echo "CRC32C x86 guards:"
+      grep -nE '__x86_64__|__SSE4_2__|__LP64__' common/crc32c.c || true
 
-          p.write_text(s)
+  - name: Patch memory barrier for ARM64
+    run: |
+      sed -i 's/asm volatile ("mfence" ::: "memory");/__atomic_thread_fence(__ATOMIC_SEQ_CST);/g' common/mp-queue.c
+      sed -i 's/asm volatile("mfence" ::: "memory");/__atomic_thread_fence(__ATOMIC_SEQ_CST);/g' common/mp-queue.c
 
-          # ==================================================
-          # mp-queue.c
-          # Replace x86 mfence with ARM64 barrier.
-          # ==================================================
+      echo "Remaining mfence:"
+      grep -n "mfence" common/mp-queue.c || true
 
-          p = Path("common/mp-queue.c")
-          s = p.read_text()
+  - name: Build
+    run: |
+      make clean || true
 
-          s = s.replace(
-              'asm volatile ("mfence" ::: "memory");',
-              'asm volatile ("dmb ish" ::: "memory");'
-          )
+      make \
+        CC=gcc \
+        CFLAGS="-O2 -std=gnu11 -Wall -fcommon"
 
-          s = s.replace(
-              'asm volatile("mfence" ::: "memory");',
-              'asm volatile ("dmb ish" ::: "memory");'
-          )
+  - name: Check binary
+    run: |
+      echo "Binary information:"
+      file objs/mtproto-proxy
 
-          p.write_text(s)
+      echo
+      echo "ELF information:"
+      readelf -h objs/mtproto-proxy | grep -E 'Class|Machine'
 
-          print("ARM64 patches applied")
-          PY
+  - name: Prepare artifact
+    run: |
+      mkdir -p artifact
 
-      - name: Remove x86 compiler flags
-        run: |
-          sed -i 's/-mpclmul//g' Makefile
-          sed -i 's/-march=core2//g' Makefile
-          sed -i 's/-mfpmath=sse//g' Makefile
-          sed -i 's/-mssse3//g'
+      cp objs/mtproto-proxy artifact/mtproto-proxy
 
-      - name: Build MTProxy
-        run: |
-          make clean || true
+      chmod +x artifact/mtproto-proxy
 
-          make \
-            CFLAGS="-O2 -std=gnu11 -Wall -fcommon -fno-strict-aliasing -fno-strict-overflow -fwrapv -DAES=1 -D_GNU_SOURCE=1 -D_FILE_OFFSET_BITS=64"
+      tar -czf mtproxy-arm64.tar.gz -C artifact mtproto-proxy
 
-      - name: Verify binary
-        run: |
-          echo "Binary:"
-          file objs/bin/mtproto-proxy
+  - name: Upload ARM64 binary
+    uses: actions/upload-artifact@v4
+    with:
+      name: mtproxy-arm64
+      path: mtproxy-arm64.tar.gz
+```
 
-          echo "ELF architecture:"
-          readelf -h objs/bin/mtproto-proxy | grep -E 'Class|Machine'
-
-      - name: Package
-        run: |
-          mkdir -p artifact
-          cp objs/bin/mtproto-proxy artifact/mtproto-proxy
-          chmod +x artifact/mtproto-proxy
-
-      - name: Upload ARM64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: mtproto-proxy-arm64
-          path: artifact/mtproto-proxy
+#+end
