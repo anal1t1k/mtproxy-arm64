@@ -20,6 +20,7 @@ jobs:
       - name: Patch Makefile
         run: |
           cd MTProxy
+
           sed -i 's/-mpclmul//g' Makefile
           sed -i 's/-march=core2//g' Makefile
           sed -i 's/-mfpmath=sse//g' Makefile
@@ -29,24 +30,20 @@ jobs:
         run: |
           cd MTProxy
 
+          # ARM64 must not enter the x86 CRC32 inline-assembly block.
           sed -i '0,/^#ifdef __LP64__$/s//\#if defined(__x86_64__) || defined(__i386__)/' common/crc32c.c
 
+          # The old #else block is 32-bit x86 only.
           sed -i '0,/^#else$/s//\#elif defined(__i386__)/' common/crc32c.c
 
-          sed -i '/^static unsigned crc32c_combine_clmul /i \#if defined(__x86_64__) || defined(__i386__)' common/crc32c.c
+          # The CLMUL combine implementation is x86-only.
+          sed -i '/^static unsigned crc32c_combine_clmul /i #if defined(__x86_64__) || defined(__i386__)' common/crc32c.c
+          sed -i '/^static void crc32c_init (void) __attribute__ ((constructor));/i #endif' common/crc32c.c
 
-          sed -i '/^static void crc32c_init (void) __attribute__ ((constructor));/i \#endif' common/crc32c.c
+          # Replace CPU-feature detection with a portable ARM64 path.
+          perl -0pi -e 's/void crc32c_init \(void\) \{\n.*?\n\}/void crc32c_init (void) {\n#if defined(__x86_64__) || defined(__i386__)\n  kdb_cpuid_t *p = kdb_cpuid ();\n  compute_crc32c_combine = \\&crc32c_combine_generic;\n  if (p->ecx \\& (1 << 20)) {\n    crc32c_partial = crc32c_partial_sse42;\n#if defined(__x86_64__)\n    if (p->ecx \\& 2) {\n      crc32c_partial = crc32c_partial_sse42_clmul;\n      compute_crc32c_combine = \\&crc32c_combine_clmul;\n    }\n#endif\n  } else {\n    crc32c_partial = \\&crc32c_partial_four_tables;\n  }\n#else\n  compute_crc32c_combine = \\&crc32c_combine_generic;\n  crc32c_partial = \\&crc32c_partial_four_tables;\n#endif\n}/s' common/crc32c.c
 
-          sed -i 's/^  kdb_cpuid_t \*p = kdb_cpuid ();$/#if defined(__x86_64__) || defined(__i386__)\n  kdb_cpuid_t *p = kdb_cpuid ();/' common/crc32c.c
-
-          sed -i '/^  kdb_cpuid_t \*p = kdb_cpuid ();$/,/^  }$/{
-            /^  }$/a\
-#else\
-    crc32c_partial = &crc32c_partial_four_tables;\
-#endif
-          }' common/crc32c.c
-
-          echo "=== CRC32C check ==="
+          echo "=== CRC32C structure check ==="
           grep -nE '__x86_64__|__i386__|crc32c_partial_four_tables|crc32c_combine_clmul' common/crc32c.c
 
       - name: Patch ARM64 memory barrier
@@ -55,6 +52,7 @@ jobs:
 
           sed -i 's/asm volatile ("mfence" ::: "memory");/__sync_synchronize();/g' common/mp-queue.c
           sed -i 's/asm volatile("mfence" ::: "memory");/__sync_synchronize();/g' common/mp-queue.c
+          sed -i 's/^[[:space:]]*mfence ();/__sync_synchronize();/g' common/mp-queue.c
 
           echo "=== mfence check ==="
           grep -Rni "mfence" common/mp-queue.c || true
@@ -68,8 +66,10 @@ jobs:
       - name: Check binary
         run: |
           cd MTProxy
+
           echo "=== Binary ==="
           file objs/bin/mtproto-proxy
+
           echo "=== Size ==="
           ls -lh objs/bin/mtproto-proxy
 
