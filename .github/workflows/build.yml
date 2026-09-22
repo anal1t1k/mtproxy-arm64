@@ -18,7 +18,8 @@ jobs:
             git \
             build-essential \
             libssl-dev \
-            zlib1g-dev
+            zlib1g-dev \
+            binutils
 
       - name: Clone official MTProxy
         run: |
@@ -26,20 +27,31 @@ jobs:
           cd MTProxy
           git rev-parse HEAD
 
-      - name: Patch Makefile for ARM64
+      - name: Patch MTProxy for ARM64
         run: |
           cd MTProxy
 
-          echo "=== Original architecture flags ==="
-          grep -nE 'mpclmul|mfpmath|mssse3|march=' Makefile || true
+          echo "=== Remove x86 compiler flags ==="
 
           sed -i 's/-mpclmul//g' Makefile
           sed -i 's/-mfpmath=sse//g' Makefile
           sed -i 's/-mssse3//g' Makefile
           sed -i 's/-march=core2//g' Makefile
 
-          echo "=== ARM64 Makefile flags ==="
-          grep -nE 'mpclmul|mfpmath|mssse3|march=' Makefile || true
+          echo "=== Disable x86 CRC32C implementation ==="
+
+          grep -n "crc32c_partial_sse42_clmul" common/crc32c.c || true
+
+          sed -i 's/^static inline void crc32c_partial_sse42_clmul/static inline void __attribute__((unused)) crc32c_partial_sse42_clmul/' common/crc32c.c
+
+          echo "=== Architecture flags remaining in Makefile ==="
+          grep -nE 'mpclmul|mfpmath|mssse3|march=|msse|sse4|avx' Makefile || true
+
+      - name: Show ARM64 compiler
+        run: |
+          uname -a
+          uname -m
+          cc --version
 
       - name: Build MTProxy
         run: |
@@ -48,13 +60,13 @@ jobs:
 
       - name: Check binary
         run: |
-          echo "=== Binary information ==="
+          echo "=== Binary ==="
           file MTProxy/objs/bin/mtproto-proxy
 
-          echo "=== Architecture ==="
+          echo "=== ELF architecture ==="
           readelf -h MTProxy/objs/bin/mtproto-proxy | grep -E 'Class|Machine'
 
-          echo "=== Binary size ==="
+          echo "=== Size ==="
           ls -lh MTProxy/objs/bin/mtproto-proxy
 
       - name: Upload ARM64 binary
