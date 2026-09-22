@@ -11,32 +11,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Clone official MTProxy
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            build-essential \
-            libssl-dev \
-            zlib1g-dev \
-            binutils
-
-      - name: Clone MTProxy
-        run: |
-          git clone --depth 1 https://github.com/TelegramMessenger/MTProxy.git
+          git clone https://github.com/TelegramMessenger/MTProxy.git
           cd MTProxy
-          git rev-parse HEAD
+          git checkout f36d8af769ffaeac36978d38c2c0f6d1104c2137
 
       - name: Patch Makefile for ARM64
         run: |
           cd MTProxy
 
           sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
           sed -i 's/-mfpmath=sse//g' Makefile
           sed -i 's/-mssse3//g' Makefile
-          sed -i 's/-march=core2//g' Makefile
 
-      - name: Disable x86 CRC32C optimizations
+      - name: Patch CRC32C for ARM64
         run: |
           cd MTProxy
 
@@ -46,22 +36,27 @@ jobs:
           p = Path("common/crc32c.c")
           s = p.read_text()
 
-          # Find the x86 CRC32C implementation.
           start = s.index("static unsigned crc32c_partial_sse42_clmul")
-          end = s.index("static unsigned crc32c_partial_sse42", start)
+          marker = "\nstatic unsigned crc32c_partial_sse42"
+          end = s.index(marker, start)
 
-          # Keep the generic implementation and remove the x86 CLMUL
-          # implementation from the ARM64 compilation.
           block = s[start:end]
 
-          s = s[:start] + "#if defined(__x86_64__) || defined(__i386__)\n" + block + "#endif\n" + s[end:]
+          s = (
+              s[:start]
+              + "#if defined(__x86_64__) || defined(__i386__)\n"
+              + block
+              + "#endif\n"
+              + s[end:]
+          )
 
           p.write_text(s)
-
-          print("ARM64 CRC32C patch applied")
           PY
 
-      - name: Disable x86 CRC32C selection
+          echo "=== CRC32C x86 block ==="
+          grep -n -A3 -B2 "crc32c_partial_sse42_clmul" common/crc32c.c || true
+
+      - name: Disable x86 CRC32C runtime selection
         run: |
           cd MTProxy
 
@@ -70,14 +65,6 @@ jobs:
 
           p = Path("common/crc32c.c")
           s = p.read_text()
-
-          # On ARM64 don't select the SSE4.2/CLMUL implementation.
-          s = s.replace(
-              "crc32c_partial = crc32c_partial_sse42;",
-              "#if defined(__x86_64__) || defined(__i386__)\n"
-              "      crc32c_partial = crc32c_partial_sse42;\n"
-              "#endif"
-          )
 
           s = s.replace(
               "crc32c_partial = crc32c_partial_sse42_clmul;",
@@ -86,58 +73,40 @@ jobs:
               "#endif"
           )
 
+          s = s.replace(
+              "compute_crc32c_combine = &crc32c_combine_clmul;",
+              "#if defined(__x86_64__) || defined(__i386__)\n"
+              "      compute_crc32c_combine = &crc32c_combine_clmul;\n"
+              "#endif"
+          )
+
           p.write_text(s)
-
-          print("CRC32C selection patched")
           PY
 
-      - name: Patch RDTSC for ARM64
+      - name: Show remaining x86 CRC references
         run: |
           cd MTProxy
 
-          python3 <<'PY'
-          from pathlib import Path
+          echo "=== x86 CRC references ==="
+          grep -nE \
+            '__builtin_ia32|pclmul|crc32[qblw]|__m128|v2di' \
+            common/crc32c.c || true
 
-          p = Path("common/precise-time.h")
-          s = p.read_text()
-
-          print("=== precise-time.h ===")
-          print(s)
-          PY
-
-      - name: Show remaining x86 references
-        run: |
-          cd MTProxy
-
-          echo "================ X86 REFERENCES ================"
-
-          grep -RniE \
-            'rdtsc|__rdtsc|ia32|pclmul|sse42|clmul' \
-            common engine mtproto 2>/dev/null || true
-
-      - name: Build MTProxy
+      - name: Build
         run: |
           cd MTProxy
 
           make clean || true
-          make -j$(nproc)
+          rm -rf objs dep
+
+          make -j2
 
       - name: Check binary
         run: |
-          echo "================ BINARY ================"
+          cd MTProxy
 
-          file MTProxy/objs/bin/mtproto-proxy
-
-          echo
-          echo "================ ELF ================"
-
-          readelf -h MTProxy/objs/bin/mtproto-proxy | \
-            grep -E 'Class|Machine'
-
-          echo
-          echo "================ SIZE ================"
-
-          ls -lh MTProxy/objs/bin/mtproto-proxy
+          file objs/bin/mtproto-proxy
+          ls -lh objs/bin/mtproto-proxy
 
       - name: Upload ARM64 binary
         uses: actions/upload-artifact@v4
