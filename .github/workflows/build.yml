@@ -1,112 +1,80 @@
-      - name: Patch x86 code for ARM64
+name: Build MTProxy ARM64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone official MTProxy
+        run: |
+          git clone https://github.com/TelegramMessenger/MTProxy.git
+          cd MTProxy
+          git checkout f36d8af769ffaeac36978d38c2c0f6d1104c2137
+
+      - name: Patch Makefile
+        run: |
+          cd MTProxy
+          sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
+          sed -i 's/-mfpmath=sse//g' Makefile
+          sed -i 's/-mssse3//g' Makefile
+
+      - name: Patch CRC32C
         run: |
           cd MTProxy
 
-          python3 <<'PY'
-          from pathlib import Path
+          sed -i '0,/^#ifdef __LP64__$/s//\#if defined(__x86_64__) || defined(__i386__)/' common/crc32c.c
 
-          # ---------------------------------------------------------
-          # CRC32C
-          # ---------------------------------------------------------
+          sed -i '0,/^#else$/s//\#elif defined(__i386__)/' common/crc32c.c
 
-          p = Path("common/crc32c.c")
-          s = p.read_text()
+          sed -i '/^static unsigned crc32c_combine_clmul /i \#if defined(__x86_64__) || defined(__i386__)' common/crc32c.c
 
-          old = "#ifdef __LP64__"
-          new = "#if defined(__x86_64__) || defined(__i386__)"
+          sed -i '/^static void crc32c_init (void) __attribute__ ((constructor));/i \#endif' common/crc32c.c
 
-          if old not in s:
-              raise SystemExit("ERROR: CRC32C architecture guard not found")
+          sed -i 's/^  kdb_cpuid_t \*p = kdb_cpuid ();$/#if defined(__x86_64__) || defined(__i386__)\n  kdb_cpuid_t *p = kdb_cpuid ();/' common/crc32c.c
 
-          s = s.replace(old, new, 1)
+          sed -i '/^  kdb_cpuid_t \*p = kdb_cpuid ();$/,/^  }$/{
+            /^  }$/a\
+#else\
+    crc32c_partial = &crc32c_partial_four_tables;\
+#endif
+          }' common/crc32c.c
 
-          old = "#else\nstatic unsigned crc32c_partial_sse42"
-          new = "#elif defined(__i386__)"
+          echo "=== CRC32C check ==="
+          grep -nE '__x86_64__|__i386__|crc32c_partial_four_tables|crc32c_combine_clmul' common/crc32c.c
 
-          if old not in s:
-              raise SystemExit("ERROR: CRC32C i386 branch not found")
+      - name: Patch ARM64 memory barrier
+        run: |
+          cd MTProxy
 
-          s = s.replace(
-              "#else\nstatic unsigned crc32c_partial_sse42",
-              "#elif defined(__i386__)\nstatic unsigned crc32c_partial_sse42",
-              1
-          )
+          sed -i 's/asm volatile ("mfence" ::: "memory");/__sync_synchronize();/g' common/mp-queue.c
+          sed -i 's/asm volatile("mfence" ::: "memory");/__sync_synchronize();/g' common/mp-queue.c
 
-          old = "static unsigned crc32c_combine_clmul (unsigned crc1, unsigned crc2, int64_t len2) {"
-
-          if old not in s:
-              raise SystemExit("ERROR: crc32c_combine_clmul not found")
-
-          s = s.replace(
-              old,
-              "#if defined(__x86_64__) || defined(__i386__)\n" + old,
-              1
-          )
-
-          old = "static void crc32c_init (void) __attribute__ ((constructor));"
-
-          if old not in s:
-              raise SystemExit("ERROR: crc32c_init declaration not found")
-
-          s = s.replace(
-              old,
-              "#endif\n\n" + old,
-              1
-          )
-
-          # ARM64 must use the generic CRC32C implementation.
-          s = s.replace(
-              "  kdb_cpuid_t *p = kdb_cpuid ();\n"
-              "  compute_crc32c_combine = &crc32c_combine_generic;\n",
-              "  compute_crc32c_combine = &crc32c_combine_generic;\n"
-              "#if defined(__x86_64__) || defined(__i386__)\n"
-              "  kdb_cpuid_t *p = kdb_cpuid ();\n",
-              1
-          )
-
-          s = s.replace(
-              "    } else {\n"
-              "      crc32c_partial = &crc32c_partial_four_tables;\n"
-              "    }\n"
-              "  }\n",
-              "    } else {\n"
-              "      crc32c_partial = &crc32c_partial_four_tables;\n"
-              "    }\n"
-              "#else\n"
-              "    crc32c_partial = &crc32c_partial_four_tables;\n"
-              "#endif\n"
-              "  }\n",
-              1
-          )
-
-          p.write_text(s)
-
-          # ---------------------------------------------------------
-          # mp-queue: x86 mfence -> portable GCC/Clang full barrier
-          # ---------------------------------------------------------
-
-          p = Path("common/mp-queue.c")
-          s = p.read_text()
-
-          if "mfence" not in s:
-              raise SystemExit("ERROR: mfence not found in mp-queue.c")
-
-          s = s.replace(
-              'asm volatile ("mfence" ::: "memory");',
-              '__sync_synchronize();'
-          )
-
-          s = s.replace(
-              'asm volatile("mfence" ::: "memory");',
-              '__sync_synchronize();'
-          )
-
-          p.write_text(s)
-
-          PY
-
-          echo "=== Check mfence ==="
+          echo "=== mfence check ==="
           grep -Rni "mfence" common/mp-queue.c || true
 
-          echo "=== Check CRC32C ==="
-          grep -nE '__x86_64__|__i386__|crc32c_partial_four_tables' common/crc32c.c
+      - name: Build
+        run: |
+          cd MTProxy
+          rm -rf objs dep
+          make -j2
+
+      - name: Check binary
+        run: |
+          cd MTProxy
+          echo "=== Binary ==="
+          file objs/bin/mtproto-proxy
+          echo "=== Size ==="
+          ls -lh objs/bin/mtproto-proxy
+
+      - name: Upload ARM64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtproto-proxy-arm64
+          path: MTProxy/objs/bin/mtproto-proxy
