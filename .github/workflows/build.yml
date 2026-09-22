@@ -1,31 +1,3 @@
-name: Build MTProxy ARM64
-
-on:
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-24.04-arm
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Clone official MTProxy
-        run: |
-          git clone https://github.com/TelegramMessenger/MTProxy.git
-          cd MTProxy
-          git checkout f36d8af769ffaeac36978d38c2c0f6d1104c2137
-
-      - name: Patch Makefile
-        run: |
-          cd MTProxy
-
-          sed -i 's/-mpclmul//g' Makefile
-          sed -i 's/-march=core2//g' Makefile
-          sed -i 's/-mfpmath=sse//g' Makefile
-          sed -i 's/-mssse3//g' Makefile
-
       - name: Patch CRC32C
         run: |
           cd MTProxy
@@ -40,41 +12,8 @@ jobs:
           sed -i '/^static unsigned crc32c_combine_clmul /i #if defined(__x86_64__) || defined(__i386__)' common/crc32c.c
           sed -i '/^static void crc32c_init (void) __attribute__ ((constructor));/i #endif' common/crc32c.c
 
-          # Replace CPU-feature detection with a portable ARM64 path.
-          perl -0pi -e 's/void crc32c_init \(void\) \{\n.*?\n\}/void crc32c_init (void) {\n#if defined(__x86_64__) || defined(__i386__)\n  kdb_cpuid_t *p = kdb_cpuid ();\n  compute_crc32c_combine = \\&crc32c_combine_generic;\n  if (p->ecx \\& (1 << 20)) {\n    crc32c_partial = crc32c_partial_sse42;\n#if defined(__x86_64__)\n    if (p->ecx \\& 2) {\n      crc32c_partial = crc32c_partial_sse42_clmul;\n      compute_crc32c_combine = \\&crc32c_combine_clmul;\n    }\n#endif\n  } else {\n    crc32c_partial = \\&crc32c_partial_four_tables;\n  }\n#else\n  compute_crc32c_combine = \\&crc32c_combine_generic;\n  crc32c_partial = \\&crc32c_partial_four_tables;\n#endif\n}/s' common/crc32c.c
+          # Replace CPU feature detection with the portable ARM64 path.
+          perl -0pi -e 's/void crc32c_init \(void\) \{\n.*?\n\}/void crc32c_init (void) {\n#if defined(__x86_64__) || defined(__i386__)\n  kdb_cpuid_t *p = kdb_cpuid ();\n  compute_crc32c_combine = \&crc32c_combine_generic;\n  if (p->ecx \& (1 << 20)) {\n    crc32c_partial = crc32c_partial_sse42;\n#if defined(__x86_64__)\n    if (p->ecx \& 2) {\n      crc32c_partial = crc32c_partial_sse42_clmul;\n      compute_crc32c_combine = \&crc32c_combine_clmul;\n    }\n#endif\n  } else {\n    crc32c_partial = \&crc32c_partial_four_tables;\n  }\n#else\n  compute_crc32c_combine = \&crc32c_combine_generic;\n  crc32c_partial = \&crc32c_partial_four_tables;\n#endif\n}/s' common/crc32c.c
 
-          echo "=== CRC32C structure check ==="
-          grep -nE '__x86_64__|__i386__|crc32c_partial_four_tables|crc32c_combine_clmul' common/crc32c.c
-
-      - name: Patch ARM64 memory barrier
-        run: |
-          cd MTProxy
-
-          sed -i 's/asm volatile ("mfence" ::: "memory");/__sync_synchronize();/g' common/mp-queue.c
-          sed -i 's/asm volatile("mfence" ::: "memory");/__sync_synchronize();/g' common/mp-queue.c
-          sed -i 's/^[[:space:]]*mfence ();/__sync_synchronize();/g' common/mp-queue.c
-
-          echo "=== mfence check ==="
-          grep -Rni "mfence" common/mp-queue.c || true
-
-      - name: Build
-        run: |
-          cd MTProxy
-          rm -rf objs dep
-          make -j2
-
-      - name: Check binary
-        run: |
-          cd MTProxy
-
-          echo "=== Binary ==="
-          file objs/bin/mtproto-proxy
-
-          echo "=== Size ==="
-          ls -lh objs/bin/mtproto-proxy
-
-      - name: Upload ARM64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: mtproto-proxy-arm64
-          path: MTProxy/objs/bin/mtproto-proxy
+          echo "=== CRC32C ARM64 check ==="
+          grep -nE '__x86_64__|__i386__|crc32c_partial_four_tables|compute_crc32c_combine' common/crc32c.c
