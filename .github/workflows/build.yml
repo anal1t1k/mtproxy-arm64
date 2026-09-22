@@ -26,6 +26,21 @@ jobs:
           cd MTProxy
           git rev-parse HEAD
 
+      - name: Patch Makefile for ARM64
+        run: |
+          cd MTProxy
+
+          echo "=== Original architecture flags ==="
+          grep -nE 'mpclmul|mfpmath|mssse3|march=' Makefile || true
+
+          sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-mfpmath=sse//g' Makefile
+          sed -i 's/-mssse3//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
+
+          echo "=== ARM64 Makefile flags ==="
+          grep -nE 'mpclmul|mfpmath|mssse3|march=' Makefile || true
+
       - name: Build MTProxy
         run: |
           cd MTProxy
@@ -33,8 +48,14 @@ jobs:
 
       - name: Check binary
         run: |
+          echo "=== Binary information ==="
           file MTProxy/objs/bin/mtproto-proxy
-          MTProxy/objs/bin/mtproto-proxy --help || true
+
+          echo "=== Architecture ==="
+          readelf -h MTProxy/objs/bin/mtproto-proxy | grep -E 'Class|Machine'
+
+          echo "=== Binary size ==="
+          ls -lh MTProxy/objs/bin/mtproto-proxy
 
       - name: Upload ARM64 binary
         uses: actions/upload-artifact@v4
