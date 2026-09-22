@@ -5,7 +5,7 @@ workflow_dispatch:
 
 jobs:
 build:
-name: Build MTProxy on native ARM64
+name: Build MTProxy on ARM64
 runs-on: ubuntu-24.04-arm
 
 ```
@@ -15,93 +15,45 @@ steps:
     with:
       repository: TelegramMessenger/MTProxy
       ref: master
-      fetch-depth: 0
+      fetch-depth: 1
 
   - name: Install dependencies
     run: |
       sudo apt-get update
-      sudo apt-get install -y \
-        git \
-        make \
-        gcc \
-        libc6-dev \
-        libssl-dev \
-        zlib1g-dev \
-        file \
-        binutils
+      sudo apt-get install -y git make gcc libc6-dev libssl-dev zlib1g-dev file binutils
 
-  - name: Check ARM64 environment
+  - name: Check system
     run: |
       echo "Architecture:"
       uname -m
-
       echo
       echo "Compiler:"
       gcc --version
-
       echo
-      echo "Compiler target:"
+      echo "Target:"
       gcc -dumpmachine
 
-  - name: Remove x86 compiler flags
-    run: |
-      sed -i 's/-mpclmul//g' Makefile
-      sed -i 's/-march=core2//g' Makefile
-      sed -i 's/-mfpmath=sse//g' Makefile
-      sed -i 's/-mssse3//g' Makefile
-
-      echo "Makefile flags after patch:"
-      grep -nE 'mpclmul|march=core2|mfpmath=sse|mssse3' Makefile || true
-
-  - name: Patch CRC32C for ARM64
-    run: |
-      sed -i 's/#ifdef __LP64__/#if defined(__x86_64__)/' common/crc32c.c
-
-      sed -i 's/#ifdef __SSE4_2__/#if defined(__x86_64__) \&\& defined(__SSE4_2__)/g' common/crc32c.c
-
-      echo "CRC32C x86 guards:"
-      grep -nE '__x86_64__|__SSE4_2__|__LP64__' common/crc32c.c || true
-
-  - name: Patch memory barrier for ARM64
-    run: |
-      sed -i 's/asm volatile ("mfence" ::: "memory");/__atomic_thread_fence(__ATOMIC_SEQ_CST);/g' common/mp-queue.c
-      sed -i 's/asm volatile("mfence" ::: "memory");/__atomic_thread_fence(__ATOMIC_SEQ_CST);/g' common/mp-queue.c
-
-      echo "Remaining mfence:"
-      grep -n "mfence" common/mp-queue.c || true
-
-  - name: Build
+  - name: Build MTProxy
     run: |
       make clean || true
-
-      make \
-        CC=gcc \
-        CFLAGS="-O2 -std=gnu11 -Wall -fcommon"
+      make
 
   - name: Check binary
     run: |
-      echo "Binary information:"
-      file objs/mtproto-proxy
+      find . -type f -name 'mtproto-proxy' -o -name 'mtproxy' | head -20
+      file objs/bin/mtproto-proxy || true
+      readelf -h objs/bin/mtproto-proxy | grep -E 'Class|Machine' || true
 
-      echo
-      echo "ELF information:"
-      readelf -h objs/mtproto-proxy | grep -E 'Class|Machine'
-
-  - name: Prepare artifact
+  - name: Package
     run: |
       mkdir -p artifact
-
-      cp objs/mtproto-proxy artifact/mtproto-proxy
-
+      cp objs/bin/mtproto-proxy artifact/mtproto-proxy
       chmod +x artifact/mtproto-proxy
-
       tar -czf mtproxy-arm64.tar.gz -C artifact mtproto-proxy
 
-  - name: Upload ARM64 binary
+  - name: Upload binary
     uses: actions/upload-artifact@v4
     with:
       name: mtproxy-arm64
       path: mtproxy-arm64.tar.gz
 ```
-
-#+end
