@@ -1,10 +1,10 @@
-name: Build MTProxy ARM64
+name: Inspect MTProxy ARM64
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-24.04-arm
 
     steps:
@@ -14,63 +14,22 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            build-essential \
-            libssl-dev \
-            zlib1g-dev \
-            binutils
+          sudo apt-get install -y git build-essential libssl-dev zlib1g-dev
 
-      - name: Clone official MTProxy
+      - name: Clone MTProxy
         run: |
           git clone --depth 1 https://github.com/TelegramMessenger/MTProxy.git
-          cd MTProxy
-          git rev-parse HEAD
 
-      - name: Patch MTProxy for ARM64
+      - name: Show CRC32C source
         run: |
           cd MTProxy
 
-          echo "=== Remove x86 compiler flags ==="
+          echo "================ CRC32C SOURCE ================"
+          sed -n '350,510p' common/crc32c.c
 
-          sed -i 's/-mpclmul//g' Makefile
-          sed -i 's/-mfpmath=sse//g' Makefile
-          sed -i 's/-mssse3//g' Makefile
-          sed -i 's/-march=core2//g' Makefile
+          echo
+          echo "================ X86 REFERENCES ================"
 
-          echo "=== Disable x86 CRC32C implementation ==="
-
-          grep -n "crc32c_partial_sse42_clmul" common/crc32c.c || true
-
-          sed -i 's/^static inline void crc32c_partial_sse42_clmul/static inline void __attribute__((unused)) crc32c_partial_sse42_clmul/' common/crc32c.c
-
-          echo "=== Architecture flags remaining in Makefile ==="
-          grep -nE 'mpclmul|mfpmath|mssse3|march=|msse|sse4|avx' Makefile || true
-
-      - name: Show ARM64 compiler
-        run: |
-          uname -a
-          uname -m
-          cc --version
-
-      - name: Build MTProxy
-        run: |
-          cd MTProxy
-          make -j$(nproc)
-
-      - name: Check binary
-        run: |
-          echo "=== Binary ==="
-          file MTProxy/objs/bin/mtproto-proxy
-
-          echo "=== ELF architecture ==="
-          readelf -h MTProxy/objs/bin/mtproto-proxy | grep -E 'Class|Machine'
-
-          echo "=== Size ==="
-          ls -lh MTProxy/objs/bin/mtproto-proxy
-
-      - name: Upload ARM64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: mtproto-proxy-arm64
-          path: MTProxy/objs/bin/mtproto-proxy
+          grep -RniE \
+            'rdtsc|__rdtsc|ia32|pclmul|sse42|clmul' \
+            common engine mtproto 2>/dev/null | head -100
