@@ -36,8 +36,8 @@ jobs:
           p = Path("common/crc32c.c")
           s = p.read_text()
 
-          # __LP64__ is also defined on ARM64, but the following
-          # implementation contains x86-specific assembly.
+          # __LP64__ is also defined on ARM64, but this block
+          # contains x86-specific assembly.
           old = "#ifdef __LP64__"
           new = "#if defined(__x86_64__) || defined(__i386__)"
 
@@ -46,18 +46,19 @@ jobs:
 
           s = s.replace(old, new, 1)
 
-          # On ARM64 the x86 CLMUL implementation does not exist,
-          # therefore do not select it at runtime.
+          # On ARM64 the x86 CLMUL implementation does not exist.
           old_selection = "      crc32c_partial = crc32c_partial_sse42_clmul;"
 
           if old_selection not in s:
               raise SystemExit("ERROR: CLMUL selection not found")
 
-          new_selection = """#if defined(__x86_64__) || defined(__i386__)
-      crc32c_partial = crc32c_partial_sse42_clmul;
-#else
-      crc32c_partial = crc32c_partial_four_tables;
-#endif"""
+          new_selection = "\n".join([
+              "#if defined(__x86_64__) || defined(__i386__)",
+              "      crc32c_partial = crc32c_partial_sse42_clmul;",
+              "#else",
+              "      crc32c_partial = crc32c_partial_four_tables;",
+              "#endif"
+          ])
 
           s = s.replace(old_selection, new_selection, 1)
 
