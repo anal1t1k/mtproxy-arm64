@@ -1,28 +1,88 @@
-name: Inspect MTProxy ARM64
+name: Build MTProxy ARM64
 
 on:
   workflow_dispatch:
 
 jobs:
-  inspect:
+  build:
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Clone
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Clone official MTProxy
         run: |
           git clone https://github.com/TelegramMessenger/MTProxy.git
           cd MTProxy
           git checkout f36d8af769ffaeac36978d38c2c0f6d1104c2137
 
-      - name: Inspect CRC32C
+      - name: Patch Makefile for ARM64
         run: |
           cd MTProxy
 
-          echo "===== 250-700 ====="
-          nl -ba common/crc32c.c | sed -n '250,700p'
+          sed -i 's/-mpclmul//g' Makefile
+          sed -i 's/-march=core2//g' Makefile
+          sed -i 's/-mfpmath=sse//g' Makefile
+          sed -i 's/-mssse3//g' Makefile
 
-          echo "===== CRC functions ====="
-          grep -nE '^(static )?(unsigned|uint32_t).*crc32c|crc32c_partial' common/crc32c.c
+      - name: Patch CRC32C architecture check
+        run: |
+          cd MTProxy
 
-          echo "===== architecture guards ====="
-          grep -nE '#(if|ifdef|ifndef|else|endif)' common/crc32c.c
+          python3 <<'PY'
+          from pathlib import Path
+
+          p = Path("common/crc32c.c")
+          s = p.read_text()
+
+          old = "#ifdef __LP64__"
+          new = "#if defined(__x86_64__) || defined(__i386__)"
+
+          if old not in s:
+              raise SystemExit("ERROR: '#ifdef __LP64__' not found")
+
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          PY
+
+          echo "=== Architecture guard ==="
+          sed -n '300,310p' common/crc32c.c
+
+      - name: Verify ARM64 CRC32C selection
+        run: |
+          cd MTProxy
+
+          echo "=== Architecture ==="
+          uname -m
+
+          echo "=== CRC32C functions ==="
+          grep -nE 'crc32c_partial_(sse42|four_tables)' common/crc32c.c
+
+          echo "=== x86 CRC instructions ==="
+          grep -nE '__builtin_ia32|pclmul|crc32q|crc32l|crc32w|crc32b' common/crc32c.c || true
+
+      - name: Build
+        run: |
+          cd MTProxy
+
+          rm -rf objs dep
+
+          make -j2
+
+      - name: Check binary
+        run: |
+          cd MTProxy
+
+          echo "=== Binary ==="
+          file objs/bin/mtproto-proxy
+
+          echo "=== Size ==="
+          ls -lh objs/bin/mtproto-proxy
+
+      - name: Upload ARM64 binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mtproto-proxy-arm64
+          path: MTProxy/objs/bin/mtproto-proxy
