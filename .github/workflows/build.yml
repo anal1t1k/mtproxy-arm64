@@ -26,7 +26,7 @@ jobs:
           sed -i 's/-mfpmath=sse//g' Makefile
           sed -i 's/-mssse3//g' Makefile
 
-      - name: Patch CRC32C architecture check
+      - name: Patch CRC32C for ARM64
         run: |
           cd MTProxy
 
@@ -36,32 +36,36 @@ jobs:
           p = Path("common/crc32c.c")
           s = p.read_text()
 
+          # __LP64__ is also defined on ARM64, but the following
+          # implementation contains x86-specific assembly.
           old = "#ifdef __LP64__"
           new = "#if defined(__x86_64__) || defined(__i386__)"
 
           if old not in s:
-              raise SystemExit("ERROR: '#ifdef __LP64__' not found")
+              raise SystemExit("ERROR: architecture guard not found")
 
           s = s.replace(old, new, 1)
+
+          # On ARM64 the x86 CLMUL implementation does not exist,
+          # therefore do not select it at runtime.
+          old_selection = "      crc32c_partial = crc32c_partial_sse42_clmul;"
+
+          if old_selection not in s:
+              raise SystemExit("ERROR: CLMUL selection not found")
+
+          new_selection = """#if defined(__x86_64__) || defined(__i386__)
+      crc32c_partial = crc32c_partial_sse42_clmul;
+#else
+      crc32c_partial = crc32c_partial_four_tables;
+#endif"""
+
+          s = s.replace(old_selection, new_selection, 1)
 
           p.write_text(s)
           PY
 
-          echo "=== Architecture guard ==="
-          sed -n '300,310p' common/crc32c.c
-
-      - name: Verify ARM64 CRC32C selection
-        run: |
-          cd MTProxy
-
-          echo "=== Architecture ==="
-          uname -m
-
-          echo "=== CRC32C functions ==="
-          grep -nE 'crc32c_partial_(sse42|four_tables)' common/crc32c.c
-
-          echo "=== x86 CRC instructions ==="
-          grep -nE '__builtin_ia32|pclmul|crc32q|crc32l|crc32w|crc32b' common/crc32c.c || true
+          echo "=== CRC32C init ==="
+          sed -n '635,665p' common/crc32c.c
 
       - name: Build
         run: |
