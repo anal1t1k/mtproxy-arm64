@@ -1,115 +1,28 @@
-name: Build MTProxy ARM64
+name: Inspect MTProxy ARM64
 
 on:
   workflow_dispatch:
 
 jobs:
-  build:
+  inspect:
     runs-on: ubuntu-24.04-arm
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Clone official MTProxy
+      - name: Clone
         run: |
           git clone https://github.com/TelegramMessenger/MTProxy.git
           cd MTProxy
           git checkout f36d8af769ffaeac36978d38c2c0f6d1104c2137
 
-      - name: Patch Makefile for ARM64
+      - name: Inspect CRC32C
         run: |
           cd MTProxy
 
-          sed -i 's/-mpclmul//g' Makefile
-          sed -i 's/-march=core2//g' Makefile
-          sed -i 's/-mfpmath=sse//g' Makefile
-          sed -i 's/-mssse3//g' Makefile
+          echo "===== 250-700 ====="
+          nl -ba common/crc32c.c | sed -n '250,700p'
 
-      - name: Patch CRC32C for ARM64
-        run: |
-          cd MTProxy
+          echo "===== CRC functions ====="
+          grep -nE '^(static )?(unsigned|uint32_t).*crc32c|crc32c_partial' common/crc32c.c
 
-          python3 <<'PY'
-          from pathlib import Path
-
-          p = Path("common/crc32c.c")
-          s = p.read_text()
-
-          start = s.index("static unsigned crc32c_partial_sse42_clmul")
-          marker = "\nstatic unsigned crc32c_partial_sse42"
-          end = s.index(marker, start)
-
-          block = s[start:end]
-
-          s = (
-              s[:start]
-              + "#if defined(__x86_64__) || defined(__i386__)\n"
-              + block
-              + "#endif\n"
-              + s[end:]
-          )
-
-          p.write_text(s)
-          PY
-
-          echo "=== CRC32C x86 block ==="
-          grep -n -A3 -B2 "crc32c_partial_sse42_clmul" common/crc32c.c || true
-
-      - name: Disable x86 CRC32C runtime selection
-        run: |
-          cd MTProxy
-
-          python3 <<'PY'
-          from pathlib import Path
-
-          p = Path("common/crc32c.c")
-          s = p.read_text()
-
-          s = s.replace(
-              "crc32c_partial = crc32c_partial_sse42_clmul;",
-              "#if defined(__x86_64__) || defined(__i386__)\n"
-              "      crc32c_partial = crc32c_partial_sse42_clmul;\n"
-              "#endif"
-          )
-
-          s = s.replace(
-              "compute_crc32c_combine = &crc32c_combine_clmul;",
-              "#if defined(__x86_64__) || defined(__i386__)\n"
-              "      compute_crc32c_combine = &crc32c_combine_clmul;\n"
-              "#endif"
-          )
-
-          p.write_text(s)
-          PY
-
-      - name: Show remaining x86 CRC references
-        run: |
-          cd MTProxy
-
-          echo "=== x86 CRC references ==="
-          grep -nE \
-            '__builtin_ia32|pclmul|crc32[qblw]|__m128|v2di' \
-            common/crc32c.c || true
-
-      - name: Build
-        run: |
-          cd MTProxy
-
-          make clean || true
-          rm -rf objs dep
-
-          make -j2
-
-      - name: Check binary
-        run: |
-          cd MTProxy
-
-          file objs/bin/mtproto-proxy
-          ls -lh objs/bin/mtproto-proxy
-
-      - name: Upload ARM64 binary
-        uses: actions/upload-artifact@v4
-        with:
-          name: mtproto-proxy-arm64
-          path: MTProxy/objs/bin/mtproto-proxy
+          echo "===== architecture guards ====="
+          grep -nE '#(if|ifdef|ifndef|else|endif)' common/crc32c.c
